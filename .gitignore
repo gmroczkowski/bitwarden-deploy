@@ -10,3 +10,5 @@ group_vars/all/vault.yml
 # Ignoruj nazwy zmiennych
 group_vars/all/vars.yml
 
+# Nie wrzucaj IP do githuba
+inventroy.ini

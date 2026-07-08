@@ -3,33 +3,40 @@
   hosts: localhost
   gather_facts: false
 
+  vars_files:
+    - group_vars/all/vars.yml
+    - group_vars/all/vault.yml
+
   tasks:
     - name: Klonowanie maszyny z szablonu i konfiguracja Cloud-Init ze zmiennych
       community.general.proxmox_kvm:
         api_host: "{{ pve_api_host }}"
-        api_token_id: "{{ pve_api_user }}"
+        # === POPRAWIONE PARAMETRY LOGOWANIA ===
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
         api_token_secret: "{{ vault_pve_api_token_secret }}"
-        api_validate_certs: false
+        validate_certs: false
         node: "{{ node }}"
-        vmid: "{{ vmid }}"
+        vmid: "9000"
+        newid: "{{ vmid }}"
         name: "{{ vm_name }}"
         clone: "{{ template_name }}"
         full: true
         timeout: 300
-        disks:
-          - id: scsi0
-            size: 15G
-        # === DANE POBIERANE DYNAMICZNIE Z VARS.YML ===
+        scsi:
+          scsi0: "local-lvm:15" 
+        ipconfig:
+          ipconfig0: "ip={{ target_vm_ip }}/{{ target_vm_netmask }},gw={{ target_vm_gateway }}"        # === DANE POBIERANE DYNAMICZNIE Z VARS.YML ===
         ciuser: "root"
         sshkeys: "{{ my_ssh_public_key }}"
         # Łączymy zmienne w wymagany przez Proxmox format: ip=IP/MASKA,gw=BRAMA
-        ipconfig0: "ip={{ target_vm_ip }}/{{ target_vm_netmask }},gw={{ target_vm_gateway }}"
         state: present
 
     - name: Uruchomienie nowej maszyny VM
       community.general.proxmox_kvm:
         api_host: "{{ pve_api_host }}"
-        api_token_id: "{{ pve_api_user }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
         api_token_secret: "{{ vault_pve_api_token_secret }}"
         api_validate_certs: false
         node: "{{ node }}"
