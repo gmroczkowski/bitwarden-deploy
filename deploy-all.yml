@@ -8,10 +8,9 @@
     - group_vars/all/vault.yml
 
   tasks:
-    - name: Klonowanie maszyny z szablonu i konfiguracja Cloud-Init ze zmiennych
+    - name: Klonowanie maszyny z szablonu
       community.general.proxmox_kvm:
         api_host: "{{ pve_api_host }}"
-        # === POPRAWIONE PARAMETRY LOGOWANIA ===
         api_user: "{{ pve_api_user }}"
         api_token_id: "{{ pve_api_token_id }}"
         api_token_secret: "{{ vault_pve_api_token_secret }}"
@@ -23,14 +22,22 @@
         clone: "{{ template_name }}"
         full: true
         timeout: 300
-        scsi:
-          scsi0: "local-lvm:15" 
-        ipconfig:
-          ipconfig0: "ip={{ target_vm_ip }}/{{ target_vm_netmask }},gw={{ target_vm_gateway }}"        # === DANE POBIERANE DYNAMICZNIE Z VARS.YML ===
+        state: present
+
+    - name: Konfiguracja parametrów Cloud-Init na nowej maszynie
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_api_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ vault_pve_api_token_secret }}"
+        validate_certs: false
+        node: "{{ node }}"
+        vmid: "{{ vmid }}"  # Targetujemy już nowo utworzone ID (120)
+        update: true
         ciuser: "root"
         sshkeys: "{{ my_ssh_public_key }}"
-        # Łączymy zmienne w wymagany przez Proxmox format: ip=IP/MASKA,gw=BRAMA
-        state: present
+        ipconfig:
+          ipconfig0: "ip={{ target_vm_ip }}/{{ target_vm_netmask }},gw={{ target_vm_gateway }}"
 
     - name: Uruchomienie nowej maszyny VM
       community.general.proxmox_kvm:
@@ -38,39 +45,47 @@
         api_user: "{{ pve_api_user }}"
         api_token_id: "{{ pve_api_token_id }}"
         api_token_secret: "{{ vault_pve_api_token_secret }}"
-        api_validate_certs: false
+        validate_certs: false
         node: "{{ node }}"
         vmid: "{{ vmid }}"
         state: started
 
     - name: Oczekiwanie na podniesienie sieci SSH na nowej maszynie
-      wait_for:
-        host: "{{ target_vm_ip }}" # Pobierane z vars.yml
+      ansible.builtin.wait_for:
+        host: "{{ target_vm_ip }}"
         port: 22
         state: started
-        timeout: 120
+        delay: 10
+        timeout: 180
+      delegate_to: localhost
 
 - name: KROK 2 - Konfiguracja Vaultwarden & Reverse Proxy
   hosts: bitwarden_server
   become: true
 
   tasks:
-    # ... (tutaj dalsza część konfiguracji Dockera i Nginxa z poprzedniego kroku, 
-    # która również automatycznie podmieni {{ domain_name }} i {{ ssl_email }} )
     - name: Instalacja Dockera i zależności systemowych
-      apt:
-        name: [apt-transport-https, ca-certificates, curl, gnupg, python3-docker, nginx, certbot, python3-certbot-nginx]
+      ansible.builtin.apt:
+        # === DODANO docker.io DO LISTY ===
+        name: [apt-transport-https, ca-certificates, curl, gnupg, docker.io, python3-docker, nginx, certbot, python3-certbot-nginx]
         state: present
         update_cache: true
 
+    # === NOWE ZADANIE: Upewniamy się, że Docker działa ===
+    - name: Upewnienie się, że usługa Docker jest uruchomiona
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
     - name: Stworzenie katalogu na dane Vaultwarden
-      file:
+      ansible.builtin.file:
         path: /opt/vaultwarden/data
         state: directory
         mode: '0755'
 
     - name: Uruchomienie kontenera Vaultwarden (nasłuchuje tylko lokalnie na 127.0.0.1)
-      docker_container:
+      community.docker.docker_container:
         name: vaultwarden
         image: vaultwarden/server:latest
         state: started
@@ -84,7 +99,7 @@
           SIGNUPS_ALLOWED: "true"
 
     - name: Konfiguracja Nginx jako Reverse Proxy
-      copy:
+      ansible.builtin.copy:
         dest: /etc/nginx/sites-available/vaultwarden
         content: |
           server {
@@ -101,22 +116,22 @@
           }
 
     - name: Aktywacja konfiguracji Nginx
-      file:
+      ansible.builtin.file:
         src: /etc/nginx/sites-available/vaultwarden
         dest: /etc/nginx/sites-enabled/vaultwarden
         state: link
 
     - name: Usunięcie domyślnej strony Nginx
-      file:
+      ansible.builtin.file:
         path: /etc/nginx/sites-enabled/default
         state: absent
 
     - name: Restart Nginx
-      service:
+      ansible.builtin.service:
         name: nginx
         state: restarted
 
     - name: Automatyczne wygenerowanie certyfikatu Let's Encrypt (Wymaga otwartego portu 80 na świat!)
-      command: "certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos --email {{ ssl_email }}"
+      ansible.builtin.command: "certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos --email {{ ssl_email }}"
       args:
         creates: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
