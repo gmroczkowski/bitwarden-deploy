@@ -7,6 +7,6 @@ group_vars/all/vault.yml
 # Ignoruj plik tekstowy z hasłem do skarbca (jeśli go użyjesz - patrz niżej)
 .vault_pass
 
-# Ingoruj nazwy zmiennych
-group_vars/all/vars/yml
+# Ignoruj nazwy zmiennych
+group_vars/all/vars.yml
 

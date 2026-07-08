@@ -1,0 +1,115 @@
+---
+- name: KROK 1 - Stworzenie maszyny VM na Proxmox
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Klonowanie maszyny z szablonu i konfiguracja Cloud-Init ze zmiennych
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_api_host }}"
+        api_token_id: "{{ pve_api_user }}"
+        api_token_secret: "{{ vault_pve_api_token_secret }}"
+        api_validate_certs: false
+        node: "{{ node }}"
+        vmid: "{{ vmid }}"
+        name: "{{ vm_name }}"
+        clone: "{{ template_name }}"
+        full: true
+        timeout: 300
+        disks:
+          - id: scsi0
+            size: 15G
+        # === DANE POBIERANE DYNAMICZNIE Z VARS.YML ===
+        ciuser: "root"
+        sshkeys: "{{ my_ssh_public_key }}"
+        # Łączymy zmienne w wymagany przez Proxmox format: ip=IP/MASKA,gw=BRAMA
+        ipconfig0: "ip={{ target_vm_ip }}/{{ target_vm_netmask }},gw={{ target_vm_gateway }}"
+        state: present
+
+    - name: Uruchomienie nowej maszyny VM
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_api_host }}"
+        api_token_id: "{{ pve_api_user }}"
+        api_token_secret: "{{ vault_pve_api_token_secret }}"
+        api_validate_certs: false
+        node: "{{ node }}"
+        vmid: "{{ vmid }}"
+        state: started
+
+    - name: Oczekiwanie na podniesienie sieci SSH na nowej maszynie
+      wait_for:
+        host: "{{ target_vm_ip }}" # Pobierane z vars.yml
+        port: 22
+        state: started
+        timeout: 120
+
+- name: KROK 2 - Konfiguracja Vaultwarden & Reverse Proxy
+  hosts: bitwarden_server
+  become: true
+
+  tasks:
+    # ... (tutaj dalsza część konfiguracji Dockera i Nginxa z poprzedniego kroku, 
+    # która również automatycznie podmieni {{ domain_name }} i {{ ssl_email }} )
+    - name: Instalacja Dockera i zależności systemowych
+      apt:
+        name: [apt-transport-https, ca-certificates, curl, gnupg, python3-docker, nginx, certbot, python3-certbot-nginx]
+        state: present
+        update_cache: true
+
+    - name: Stworzenie katalogu na dane Vaultwarden
+      file:
+        path: /opt/vaultwarden/data
+        state: directory
+        mode: '0755'
+
+    - name: Uruchomienie kontenera Vaultwarden (nasłuchuje tylko lokalnie na 127.0.0.1)
+      docker_container:
+        name: vaultwarden
+        image: vaultwarden/server:latest
+        state: started
+        restart_policy: always
+        ports:
+          - "127.0.0.1:8080:80"
+        volumes:
+          - /opt/vaultwarden/data:/data
+        env:
+          WEBSOCKET_ENABLED: "true"
+          SIGNUPS_ALLOWED: "true"
+
+    - name: Konfiguracja Nginx jako Reverse Proxy
+      copy:
+        dest: /etc/nginx/sites-available/vaultwarden
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name }};
+
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Aktywacja konfiguracji Nginx
+      file:
+        src: /etc/nginx/sites-available/vaultwarden
+        dest: /etc/nginx/sites-enabled/vaultwarden
+        state: link
+
+    - name: Usunięcie domyślnej strony Nginx
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Automatyczne wygenerowanie certyfikatu Let's Encrypt (Wymaga otwartego portu 80 na świat!)
+      command: "certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos --email {{ ssl_email }}"
+      args:
+        creates: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
