@@ -1,0 +1,8 @@
+# Ignoruj pliki tymczasowe edytorów
+*.swp
+
+# Opcjonalnie: jeśli nie chcesz wysyłać nawet zaszyfrowanego skarbca:
+# group_vars/all/vault.yml
+
+# Ignoruj plik tekstowy z hasłem do skarbca (jeśli go użyjesz - patrz niżej)
+.vault_pass
